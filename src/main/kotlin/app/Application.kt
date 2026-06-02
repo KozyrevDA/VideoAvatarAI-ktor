@@ -3,6 +3,11 @@ package app
 import data.remote.ai.AvatarAiService
 import data.remote.ai.CaptionAiService
 import data.remote.ai.TranslateAiService
+import data.repository.postgres.PostgresDatabase
+import data.repository.postgres.PostgresUserRepository
+import data.repository.postgres.PostgresVideoRepository
+import features.jobs.AvatarPollingJob
+import features.notifications.PushNotificationService
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*
@@ -21,23 +26,34 @@ fun Application.module() {
     configureHTTP()
     configureAuthentication(settings)
 
+    // Init DB
+    if (settings.dbUrl.isNotBlank()) {
+        PostgresDatabase.init(settings.dbUrl, settings.dbUser, settings.dbPassword)
+    }
+
     val avatarService = AvatarAiService(
         hedraApiKey = settings.hedraApiKey,
         elevenlabsApiKey = settings.elevenlabsApiKey,
         veo3ApiKey = settings.veo3ApiKey,
     )
-    val captionService = CaptionAiService(
-        anthropicApiKey = settings.anthropicApiKey,
-    )
+    val captionService = CaptionAiService(anthropicApiKey = settings.anthropicApiKey)
     val translateService = TranslateAiService(
         hedraApiKey = settings.hedraApiKey,
         elevenlabsApiKey = settings.elevenlabsApiKey,
     )
+    val pushService = PushNotificationService(fcmServerKey = settings.fcmServerKey)
+    val userRepo = PostgresUserRepository()
+    val videoRepo = PostgresVideoRepository()
+    val pollingJob = AvatarPollingJob(avatarService, videoRepo, userRepo, pushService)
 
     configureRouting(
         avatarService = avatarService,
         captionService = captionService,
         translateService = translateService,
+        pushService = pushService,
+        userRepo = userRepo,
+        videoRepo = videoRepo,
+        pollingJob = pollingJob,
         settings = settings,
     )
 }

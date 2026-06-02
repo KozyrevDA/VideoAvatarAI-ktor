@@ -13,17 +13,24 @@ data class Settings(
     val dbPassword: String,
     val rustoreApiKey: String,
     val googleServiceAccountJson: String,
+    val fcmServerKey: String,
 )
 
 fun Application.loadSettings() = Settings(
-    hedraApiKey = environment.config.propertyOrNull("ktor.hedra.apiKey")?.getString() ?: System.getenv("HEDRA_API_KEY") ?: "",
-    elevenlabsApiKey = environment.config.propertyOrNull("ktor.elevenlabs.apiKey")?.getString() ?: System.getenv("ELEVENLABS_API_KEY") ?: "",
-    veo3ApiKey = environment.config.propertyOrNull("ktor.veo3.apiKey")?.getString() ?: System.getenv("VEO3_API_KEY") ?: "",
-    anthropicApiKey = environment.config.propertyOrNull("ktor.anthropic.apiKey")?.getString() ?: System.getenv("ANTHROPIC_API_KEY") ?: "",
-    jwtSecret = environment.config.propertyOrNull("ktor.jwt.secret")?.getString() ?: System.getenv("JWT_SECRET") ?: "default_secret",
-    dbUrl = environment.config.propertyOrNull("ktor.database.url")?.getString() ?: System.getenv("DATABASE_URL") ?: "",
-    dbUser = environment.config.propertyOrNull("ktor.database.user")?.getString() ?: System.getenv("DATABASE_USER") ?: "",
-    dbPassword = environment.config.propertyOrNull("ktor.database.password")?.getString() ?: System.getenv("DATABASE_PASSWORD") ?: "",
-    rustoreApiKey = environment.config.propertyOrNull("ktor.rustore.apiKey")?.getString() ?: System.getenv("RUSTORE_API_KEY") ?: "",
-    googleServiceAccountJson = environment.config.propertyOrNull("ktor.google.serviceAccount")?.getString() ?: System.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") ?: "",
+    hedraApiKey            = env("HEDRA_API_KEY"),
+    elevenlabsApiKey       = env("ELEVENLABS_API_KEY"),
+    veo3ApiKey             = env("VEO3_API_KEY"),
+    anthropicApiKey        = env("ANTHROPIC_API_KEY"),
+    jwtSecret              = env("JWT_SECRET", "change_me_in_prod"),
+    dbUrl                  = env("DATABASE_URL"),
+    dbUser                 = env("DATABASE_USER"),
+    dbPassword             = env("DATABASE_PASSWORD"),
+    rustoreApiKey          = env("RUSTORE_API_KEY"),
+    googleServiceAccountJson = env("GOOGLE_SERVICE_ACCOUNT_JSON"),
+    fcmServerKey           = env("FCM_SERVER_KEY"),
 )
+
+private fun Application.env(key: String, default: String = "") =
+    environment.config.propertyOrNull("ktor.$key")?.getString()
+        ?: System.getenv(key)
+        ?: default

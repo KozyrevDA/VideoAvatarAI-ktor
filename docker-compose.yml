@@ -1,0 +1,31 @@
+version: '3.8'
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - DATABASE_URL=jdbc:postgresql://db:5432/videoavataraii
+      - DATABASE_USER=postgres
+      - DATABASE_PASSWORD=postgres
+      - JWT_SECRET=local_dev_secret_change_in_prod
+      - HEDRA_API_KEY=${HEDRA_API_KEY}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - FCM_SERVER_KEY=${FCM_SERVER_KEY}
+    depends_on:
+      - db
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: videoavataraii
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

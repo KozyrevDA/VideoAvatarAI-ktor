@@ -4,6 +4,10 @@ import app.Settings
 import data.remote.ai.AvatarAiService
 import data.remote.ai.CaptionAiService
 import data.remote.ai.TranslateAiService
+import data.repository.postgres.PostgresUserRepository
+import data.repository.postgres.PostgresVideoRepository
+import features.jobs.AvatarPollingJob
+import features.notifications.PushNotificationService
 import io.ktor.server.application.*
 import io.ktor.server.routing.*
 import plugins.routing.avatar.avatarRoutes
@@ -17,16 +21,20 @@ fun Application.configureRouting(
     avatarService: AvatarAiService,
     captionService: CaptionAiService,
     translateService: TranslateAiService,
+    pushService: PushNotificationService,
+    userRepo: PostgresUserRepository,
+    videoRepo: PostgresVideoRepository,
+    pollingJob: AvatarPollingJob,
     settings: Settings,
 ) {
     routing {
         route("/api") {
-            avatarRoutes(avatarService)
+            avatarRoutes(avatarService, videoRepo, pollingJob)
             textPostRoutes(captionService)
             ideasRoutes(captionService)
-            translateRoutes(translateService)
-            billingRoutes(settings)
-            usersRoutes(settings)
+            translateRoutes(translateService, videoRepo, pollingJob)
+            billingRoutes(settings, userRepo)
+            usersRoutes(settings, userRepo)
         }
     }
 }
