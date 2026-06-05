@@ -12,16 +12,16 @@ import kotlinx.coroutines.delay
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
-// ─── Request/Response models ───────────────────────────────────────────────
+// ─── Models ───────────────────────────────────────────────────────────────────
 
 @Serializable
 data class AvatarRequest(
     val photoBase64: String,
     val text: String,
     val language: String = "ru",
-    val voiceId: String? = null,           // ElevenLabs voice id
+    val voiceId: String? = null,
     val style: String = "business",
-    val platform: String = "instagram",    // instagram → 9:16, youtube → 16:9
+    val platform: String = "instagram",
 )
 
 @Serializable
@@ -33,33 +33,19 @@ data class AvatarResult(
     val errorMessage: String? = null,
 )
 
+// Fish Audio TTS request
 @Serializable
-private data class ElevenLabsTtsRequest(
+private data class FishTtsRequest(
     val text: String,
-    val model_id: String = "eleven_multilingual_v2",
-    val voice_settings: VoiceSettings = VoiceSettings(),
+    val reference_id: String? = null,    // ID клонированного голоса
+    val format: String = "mp3",
+    val mp3_bitrate: Int = 128,
+    val chunk_length: Int = 200,
+    val normalize: Boolean = true,
+    val latency: String = "normal",      // "normal" | "balanced"
 )
 
-@Serializable
-private data class VoiceSettings(
-    val stability: Float = 0.5f,
-    val similarity_boost: Float = 0.75f,
-)
-
-@Serializable
-private data class HedraCharacterRequest(
-    val text: String,
-    val voice_url: String,
-    val avatar_image_input: AvatarImageInput,
-    val aspect_ratio: String = "9:16",
-)
-
-@Serializable
-private data class AvatarImageInput(
-    val url: String? = null,
-    val type: String = "url",
-)
-
+// Hedra lip-sync models
 @Serializable
 private data class HedraJobResponse(
     val jobId: String? = null,
@@ -76,12 +62,13 @@ private data class HedraStatusResponse(
     val error: String? = null,
 )
 
-// ─── Service ──────────────────────────────────────────────────────────────
+// ─── Service ──────────────────────────────────────────────────────────────────
 
 class AvatarAiService(
     private val hedraApiKey: String,
-    private val elevenlabsApiKey: String,
-    private val veo3ApiKey: String,       // fallback for simple photo animation
+    private val fishAudioApiKey: String,      // Fish Audio (заменяет ElevenLabs)
+    private val elevenlabsApiKey: String = "", // оставляем для совместимости
+    private val veo3ApiKey: String = "",
 ) {
     private val client = HttpClient(CIO) {
         install(ContentNegotiation) {
@@ -90,32 +77,30 @@ class AvatarAiService(
         engine { requestTimeout = 120_000 }
     }
 
-    // Default Russian voice on ElevenLabs (Rachel — multilingual)
-    private val defaultVoiceId = "21m00Tcm4TlvDq8ikWAM"
+    private val FISH_BASE = "https://api.fish.audio"
+    private val HEDRA_BASE = "https://mercury.dev.dream-ai.com/api/v1"
 
     /**
-     * Full pipeline: text → ElevenLabs audio → Hedra lip-sync video
+     * Полный пайплайн:
+     * текст → Fish Audio TTS → аудио → Hedra lip-sync → видео
      */
     suspend fun generateAvatar(request: AvatarRequest): AvatarResult {
         return try {
-            // Step 1: Generate audio via ElevenLabs TTS
-            val voiceId = request.voiceId ?: defaultVoiceId
-            val audioBytes = generateAudio(
+            // Шаг 1: Fish Audio TTS → аудио байты
+            val audioBytes = generateAudioFishAudio(
                 text = request.text,
-                voiceId = voiceId,
+                voiceId = request.voiceId,
                 language = request.language,
             )
 
-            // Step 2: Upload audio to Hedra and get audio URL
+            // Шаг 2: Загружаем аудио в Hedra
             val audioUrl = uploadAudioToHedra(audioBytes)
 
-            // Step 3: Submit Hedra character animation job
+            // Шаг 3: Создаём Hedra lip-sync job
             val aspectRatio = when (request.platform) {
-                "youtube" -> "16:9"
-                "vk" -> "16:9"
-                else -> "9:16" // instagram, tiktok → vertical
+                "youtube", "vk" -> "16:9"
+                else -> "9:16"   // instagram, tiktok → вертикальное
             }
-
             val jobId = submitHedraJob(
                 photoBase64 = request.photoBase64,
                 audioUrl = audioUrl,
@@ -124,21 +109,43 @@ class AvatarAiService(
 
             AvatarResult(taskId = jobId, status = "processing", progress = 0)
         } catch (e: Exception) {
-            AvatarResult(
-                taskId = "",
-                status = "error",
-                errorMessage = e.message ?: "Unknown error",
-            )
+            AvatarResult(taskId = "", status = "error", errorMessage = e.message ?: "Unknown error")
         }
     }
 
     /**
-     * Poll job status from Hedra
+     * Клонирование голоса через Fish Audio.
+     * Загружаем запись голоса пользователя → получаем reference_id → сохраняем в профиль.
+     */
+    suspend fun cloneVoice(audioBytes: ByteArray, title: String): String {
+        val response = client.post("$FISH_BASE/v1/model") {
+            header("Authorization", "Bearer $fishAudioApiKey")
+            setBody(MultiPartFormDataContent(formData {
+                appendInput("title", headers = Headers.build {
+                    append(HttpHeaders.ContentDisposition, "form-data; name=\"title\"")
+                }) { buildPacket { writeText(title) } }
+                appendInput("voices", headers = Headers.build {
+                    append(HttpHeaders.ContentType, "audio/mpeg")
+                    append(HttpHeaders.ContentDisposition, "form-data; name=\"voices\"; filename=\"voice.mp3\"")
+                }, size = audioBytes.size.toLong()) {
+                    buildPacket { writeFully(audioBytes) }
+                }
+            }))
+        }
+        val json = response.body<String>()
+        // Парсим _id из ответа
+        val idRegex = "\"_id\"\\s*:\\s*\"([^\"]+)\"".toRegex()
+        return idRegex.find(json)?.groupValues?.getOrNull(1)
+            ?: throw RuntimeException("Voice ID not found in response: $json")
+    }
+
+    /**
+     * Поллинг статуса Hedra job.
      */
     suspend fun checkStatus(taskId: String): AvatarResult {
         return try {
-            val response = client.get("https://mercury.dev.dream-ai.com/api/v1/projects/$taskId") {
-                bearerAuth(hedraApiKey)
+            val response = client.get("$HEDRA_BASE/projects/$taskId") {
+                header("X-API-Key", hedraApiKey)
             }.body<HedraStatusResponse>()
 
             AvatarResult(
@@ -153,37 +160,43 @@ class AvatarAiService(
         }
     }
 
-    // ─── Private helpers ────────────────────────────────────────────────────
+    // ─── Helpers ──────────────────────────────────────────────────────────────
 
-    private suspend fun generateAudio(text: String, voiceId: String, language: String): ByteArray {
-        val response = client.post("https://api.elevenlabs.io/v1/text-to-speech/$voiceId") {
-            header("xi-api-key", elevenlabsApiKey)
+    private suspend fun generateAudioFishAudio(
+        text: String,
+        voiceId: String?,
+        language: String,
+    ): ByteArray {
+        // Fish Audio TTS — streaming endpoint возвращает аудио байты напрямую
+        val response = client.post("$FISH_BASE/v1/tts") {
+            header("Authorization", "Bearer $fishAudioApiKey")
             contentType(ContentType.Application.Json)
-            setBody(ElevenLabsTtsRequest(text = text))
+            setBody(FishTtsRequest(
+                text = text,
+                reference_id = voiceId,  // null → стандартный голос
+                format = "mp3",
+                latency = "normal",
+            ))
         }
         return response.body<ByteArray>()
     }
 
     private suspend fun uploadAudioToHedra(audioBytes: ByteArray): String {
-        val response = client.post("https://mercury.dev.dream-ai.com/api/v1/audio") {
-            bearerAuth(hedraApiKey)
-            setBody(
-                MultiPartFormDataContent(formData {
-                    appendInput(
-                        key = "file",
-                        headers = Headers.build {
-                            append(HttpHeaders.ContentType, "audio/mpeg")
-                            append(HttpHeaders.ContentDisposition, "filename=voice.mp3")
-                        },
-                        size = audioBytes.size.toLong(),
-                    ) { buildPacket { writeFully(audioBytes) } }
-                })
-            )
+        val response = client.post("$HEDRA_BASE/audio") {
+            header("X-API-Key", hedraApiKey)
+            setBody(MultiPartFormDataContent(formData {
+                appendInput("file", headers = Headers.build {
+                    append(HttpHeaders.ContentType, "audio/mpeg")
+                    append(HttpHeaders.ContentDisposition, "filename=voice.mp3")
+                }, size = audioBytes.size.toLong()) {
+                    buildPacket { writeFully(audioBytes) }
+                }
+            }))
         }
         val json = response.body<String>()
-        // Parse URL from response
         val urlRegex = "\"url\"\\s*:\\s*\"([^\"]+)\"".toRegex()
-        return urlRegex.find(json)?.groupValues?.getOrNull(1) ?: throw RuntimeException("Audio URL not found in response")
+        return urlRegex.find(json)?.groupValues?.getOrNull(1)
+            ?: throw RuntimeException("Audio URL not found")
     }
 
     private suspend fun submitHedraJob(
@@ -191,43 +204,38 @@ class AvatarAiService(
         audioUrl: String,
         aspectRatio: String,
     ): String {
-        // Upload photo first
         val photoBytes = java.util.Base64.getDecoder().decode(photoBase64)
-        val photoUploadResponse = client.post("https://mercury.dev.dream-ai.com/api/v1/portrait") {
-            bearerAuth(hedraApiKey)
-            setBody(
-                MultiPartFormDataContent(formData {
-                    appendInput(
-                        key = "file",
-                        headers = Headers.build {
-                            append(HttpHeaders.ContentType, "image/jpeg")
-                            append(HttpHeaders.ContentDisposition, "filename=photo.jpg")
-                        },
-                        size = photoBytes.size.toLong(),
-                    ) { buildPacket { writeFully(photoBytes) } }
-                })
-            )
+
+        // Загружаем фото в Hedra
+        val photoResp = client.post("$HEDRA_BASE/portrait") {
+            header("X-API-Key", hedraApiKey)
+            setBody(MultiPartFormDataContent(formData {
+                appendInput("file", headers = Headers.build {
+                    append(HttpHeaders.ContentType, "image/jpeg")
+                    append(HttpHeaders.ContentDisposition, "filename=photo.jpg")
+                }, size = photoBytes.size.toLong()) {
+                    buildPacket { writeFully(photoBytes) }
+                }
+            }))
         }
-        val photoJson = photoUploadResponse.body<String>()
-        val photoUrlRegex = "\"url\"\\s*:\\s*\"([^\"]+)\"".toRegex()
-        val photoUrl = photoUrlRegex.find(photoJson)?.groupValues?.getOrNull(1)
+        val photoJson = photoResp.body<String>()
+        val photoUrl = "\"url\"\\s*:\\s*\"([^\"]+)\"".toRegex()
+            .find(photoJson)?.groupValues?.getOrNull(1)
             ?: throw RuntimeException("Photo URL not found")
 
-        // Submit character animation job
-        val jobResponse = client.post("https://mercury.dev.dream-ai.com/api/v1/characters") {
-            bearerAuth(hedraApiKey)
+        // Создаём lip-sync job
+        val jobResp = client.post("$HEDRA_BASE/characters") {
+            header("X-API-Key", hedraApiKey)
             contentType(ContentType.Application.Json)
-            setBody(
-                HedraCharacterRequest(
-                    text = "",  // text already baked into audio
-                    voice_url = audioUrl,
-                    avatar_image_input = AvatarImageInput(url = photoUrl),
-                    aspect_ratio = aspectRatio,
-                )
-            )
+            setBody(mapOf(
+                "text" to "",
+                "voice_url" to audioUrl,
+                "avatar_image_input" to mapOf("url" to photoUrl, "type" to "url"),
+                "aspect_ratio" to aspectRatio,
+            ))
         }.body<HedraJobResponse>()
 
-        return jobResponse.id.ifBlank { throw RuntimeException("Job ID not returned from Hedra") }
+        return jobResp.id.ifBlank { throw RuntimeException("Job ID empty from Hedra") }
     }
 
     fun close() = client.close()

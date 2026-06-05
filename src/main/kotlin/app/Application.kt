@@ -26,34 +26,33 @@ fun Application.module() {
     configureHTTP()
     configureAuthentication(settings)
 
-    // Init DB
     if (settings.dbUrl.isNotBlank()) {
         PostgresDatabase.init(settings.dbUrl, settings.dbUser, settings.dbPassword)
     }
 
     val avatarService = AvatarAiService(
-        hedraApiKey = settings.hedraApiKey,
-        elevenlabsApiKey = settings.elevenlabsApiKey,
-        veo3ApiKey = settings.veo3ApiKey,
+        hedraApiKey     = settings.hedraApiKey,
+        fishAudioApiKey = settings.fishAudioApiKey,  // ← Fish Audio вместо ElevenLabs
+        veo3ApiKey      = settings.veo3ApiKey,
     )
-    val captionService = CaptionAiService(anthropicApiKey = settings.anthropicApiKey)
+    val captionService  = CaptionAiService(anthropicApiKey = settings.anthropicApiKey)
     val translateService = TranslateAiService(
-        hedraApiKey = settings.hedraApiKey,
-        elevenlabsApiKey = settings.elevenlabsApiKey,
+        hedraApiKey     = settings.hedraApiKey,
+        fishAudioApiKey = settings.fishAudioApiKey,
     )
-    val pushService = PushNotificationService(fcmServerKey = settings.fcmServerKey)
-    val userRepo = PostgresUserRepository()
-    val videoRepo = PostgresVideoRepository()
-    val pollingJob = AvatarPollingJob(avatarService, videoRepo, userRepo, pushService)
+    val pushService  = PushNotificationService(fcmServerKey = settings.fcmServerKey)
+    val userRepo     = PostgresUserRepository()
+    val videoRepo    = PostgresVideoRepository()
+    val pollingJob   = AvatarPollingJob(avatarService, videoRepo, userRepo, pushService)
 
     configureRouting(
-        avatarService = avatarService,
-        captionService = captionService,
+        avatarService    = avatarService,
+        captionService   = captionService,
         translateService = translateService,
-        pushService = pushService,
-        userRepo = userRepo,
-        videoRepo = videoRepo,
-        pollingJob = pollingJob,
-        settings = settings,
+        pushService      = pushService,
+        userRepo         = userRepo,
+        videoRepo        = videoRepo,
+        pollingJob       = pollingJob,
+        settings         = settings,
     )
 }

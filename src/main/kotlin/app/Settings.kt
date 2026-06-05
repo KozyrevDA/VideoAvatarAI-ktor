@@ -4,7 +4,8 @@ import io.ktor.server.application.*
 
 data class Settings(
     val hedraApiKey: String,
-    val elevenlabsApiKey: String,
+    val fishAudioApiKey: String,       // Fish Audio TTS + клонирование голоса
+    val elevenlabsApiKey: String = "", // deprecated — заменён Fish Audio
     val veo3ApiKey: String,
     val anthropicApiKey: String,
     val jwtSecret: String,
@@ -18,6 +19,7 @@ data class Settings(
 
 fun Application.loadSettings() = Settings(
     hedraApiKey            = env("HEDRA_API_KEY"),
+    fishAudioApiKey        = env("FISH_AUDIO_API_KEY"),
     elevenlabsApiKey       = env("ELEVENLABS_API_KEY"),
     veo3ApiKey             = env("VEO3_API_KEY"),
     anthropicApiKey        = env("ANTHROPIC_API_KEY"),
