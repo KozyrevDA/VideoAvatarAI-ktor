@@ -22,37 +22,41 @@ class AvatarPollingJob(
                 attempts++
 
                 val result = avatarService.checkStatus(taskId)
+
+                // checkStatus() возвращает "ready" | "processing" | "error"
                 when (result.status) {
-                    "completed", "ready" -> {
+                    "ready" -> {
                         videoRepo.updateStatus(
-                            videoId = videoId,
-                            status = "ready",
+                            videoId  = videoId,
+                            status   = "ready",
                             videoUrl = result.videoUrl,
                         )
-                        fcmToken?.let {
+                        fcmToken?.let { token ->
                             val video = videoRepo.getHistory(userId, 1).firstOrNull()
-                            pushService.sendVideoReady(it, video?.title ?: "Видео")
+                            pushService.sendVideoReady(token, video?.title ?: "Видео")
                         }
-                        val user = userRepo.findById(userId)
-                        user?.let {
-                            if (it.tokensCount <= 2) {
-                                fcmToken?.let { token -> pushService.sendTokensLow(token, it.tokensCount) }
+                        // Уведомляем если токенов мало
+                        userRepo.findById(userId)?.let { user ->
+                            if (user.tokensCount <= 2) {
+                                fcmToken?.let { token ->
+                                    pushService.sendTokensLow(token, user.tokensCount)
+                                }
                             }
                         }
                         return@launch
                     }
-                    "error", "failed" -> {
+                    "error" -> {
                         videoRepo.updateStatus(
-                            videoId = videoId,
-                            status = "error",
+                            videoId  = videoId,
+                            status   = "error",
                             errorMsg = result.errorMessage,
                         )
                         return@launch
                     }
+                    // "processing" → продолжаем ждать
                 }
             }
-            // Timeout
-            videoRepo.updateStatus(videoId = videoId, status = "error", errorMsg = "Timeout")
+            videoRepo.updateStatus(videoId = videoId, status = "error", errorMsg = "Timeout после 5 минут")
         }
     }
 }

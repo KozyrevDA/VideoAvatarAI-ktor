@@ -34,7 +34,7 @@ fun Application.configureRouting(
             ideasRoutes(captionService)
             translateRoutes(translateService, videoRepo, pollingJob)
             billingRoutes(settings, userRepo)
-            usersRoutes(settings, userRepo)
+            usersRoutes(settings, userRepo, videoRepo)   // videoRepo добавлен
         }
     }
 }
