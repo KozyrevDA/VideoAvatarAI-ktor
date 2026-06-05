@@ -32,10 +32,13 @@ fun Application.module() {
 
     val avatarService = AvatarAiService(
         hedraApiKey     = settings.hedraApiKey,
-        fishAudioApiKey = settings.fishAudioApiKey,  // ← Fish Audio вместо ElevenLabs
+        fishAudioApiKey = settings.fishAudioApiKey,
         veo3ApiKey      = settings.veo3ApiKey,
     )
-    val captionService  = CaptionAiService(anthropicApiKey = settings.anthropicApiKey)
+    val captionService = CaptionAiService(
+        laozhangApiKey = settings.laozhangApiKey,
+        model          = settings.laozhangModel,  // chatgpt-5.2
+    )
     val translateService = TranslateAiService(
         hedraApiKey     = settings.hedraApiKey,
         fishAudioApiKey = settings.fishAudioApiKey,

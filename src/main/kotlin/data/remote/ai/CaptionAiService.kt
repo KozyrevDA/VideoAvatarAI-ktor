@@ -10,164 +10,179 @@ import io.ktor.serialization.kotlinx.json.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
+// ─── Models ──────────────────────────────────────────────────────────────────
+
 @Serializable
-data class CaptionRequest(
+data class GenerateTextPostRequest(
     val topic: String,
     val platform: String = "instagram",
-    val tone: String = "friendly",     // friendly | expert | funny
-    val language: String = "ru",
+    val tone: TextTone = TextTone.FRIENDLY,
 )
 
 @Serializable
-data class CaptionResult(
-    val text: String,
-    val hashtags: List<String>,
-    val platform: String,
-)
-
-@Serializable
-data class IdeasRequest(
+data class GenerateIdeasRequest(
     val niche: String,
     val platform: String = "instagram",
     val count: Int = 30,
 )
 
 @Serializable
-data class IdeasResult(
-    val ideas: List<String>,
+data class TextPostResult(
+    val text: String,
+    val hashtags: List<String> = emptyList(),
+    val characterCount: Int = 0,
 )
 
 @Serializable
-private data class AnthropicRequest(
-    val model: String = "claude-haiku-4-5-20251001",
-    val max_tokens: Int = 1024,
-    val messages: List<AnthropicMessage>,
-    val system: String,
+data class IdeasResult(val ideas: List<String>)
+
+@Serializable
+enum class TextTone { FRIENDLY, EXPERT, FUNNY, MOTIVATIONAL }
+
+// OpenAI-compatible request/response (laozhang.ai)
+@Serializable
+private data class OaiMessage(val role: String, val content: String)
+
+@Serializable
+private data class OaiRequest(
+    val model: String,
+    val messages: List<OaiMessage>,
+    val max_tokens: Int = 1000,
+    val temperature: Double = 0.8,
 )
 
 @Serializable
-private data class AnthropicMessage(
-    val role: String,
-    val content: String,
-)
+private data class OaiChoice(val message: OaiMessage)
 
 @Serializable
-private data class AnthropicResponse(
-    val content: List<AnthropicContent>,
-)
+private data class OaiResponse(val choices: List<OaiChoice>)
 
-@Serializable
-private data class AnthropicContent(
-    val type: String,
-    val text: String = "",
-)
+// ─── Service ─────────────────────────────────────────────────────────────────
 
-class CaptionAiService(private val anthropicApiKey: String) {
+class CaptionAiService(
+    private val laozhangApiKey: String,          // laozhang.ai ключ
+    private val anthropicApiKey: String = "",    // резерв (если нужен Claude)
+    private val model: String = "chatgpt-5.2",   // модель на laozhang.ai
+) {
+    private val BASE_URL = "https://api.laozhang.ai/v1"
 
     private val client = HttpClient(CIO) {
         install(ContentNegotiation) {
             json(Json { ignoreUnknownKeys = true; isLenient = true })
         }
-        engine { requestTimeout = 60_000 }
+        engine { requestTimeout = 30_000 }
     }
 
-    suspend fun generateCaption(request: CaptionRequest): CaptionResult {
-        val platformLabel = when (request.platform) {
-            "instagram" -> "Instagram"
-            "tiktok" -> "TikTok"
-            "vk" -> "ВКонтакте"
-            "youtube" -> "YouTube Shorts"
-            else -> request.platform
-        }
-        val toneLabel = when (request.tone) {
-            "expert" -> "экспертный, профессиональный"
-            "funny" -> "с юмором, легкий"
-            else -> "дружелюбный, тёплый"
+    // ── Текст для поста ───────────────────────────────────────────────────────
+
+    suspend fun generateTextPost(request: GenerateTextPostRequest): TextPostResult {
+        val platformGuide = when (request.platform) {
+            "instagram" -> "Instagram: 150–300 символов, 5–10 хэштегов, эмодзи"
+            "tiktok"    -> "TikTok: 100–150 символов, 3–5 хэштегов, динамично"
+            "vk"        -> "ВКонтакте: 300–600 символов, без хэштегов в тексте"
+            "youtube"   -> "YouTube: описание 200–400 символов, 3–5 хэштегов"
+            else        -> "универсальный формат, 200–300 символов"
         }
 
-        val systemPrompt = """
-Ты — опытный SMM-специалист. Пишешь тексты для постов в соцсетях.
-Отвечай ТОЛЬКО JSON без markdown, без преамбулы.
-Формат: {"text": "текст поста", "hashtags": ["хэштег1", "хэштег2"]}
-""".trimIndent()
+        val toneGuide = when (request.tone) {
+            TextTone.FRIENDLY    -> "дружелюбный, разговорный, тёплый"
+            TextTone.EXPERT      -> "экспертный, уверенный, с фактами"
+            TextTone.FUNNY       -> "с юмором, лёгкий, самоирония"
+            TextTone.MOTIVATIONAL -> "мотивирующий, вдохновляющий, призыв к действию"
+        }
 
-        val userPrompt = """
-Напиши текст поста для $platformLabel.
-Тема: ${request.topic}
-Тон: $toneLabel
-Язык: ${if (request.language == "ru") "русский" else request.language}
-Длина: 2-4 предложения + призыв к действию.
-Хэштеги: 5-7 релевантных без #.
-""".trimIndent()
-
-        val responseText = callClaude(systemPrompt, userPrompt)
+        val prompt = """
+            Напиши текст для поста в $platformGuide.
+            Тема: ${request.topic}
+            Тон: $toneGuide
+            
+            Верни JSON (без markdown-блоков):
+            {
+              "text": "текст поста",
+              "hashtags": ["хэштег1", "хэштег2"]
+            }
+        """.trimIndent()
 
         return try {
-            val clean = responseText.trim().removePrefix("```json").removeSuffix("```").trim()
-            val json = Json { ignoreUnknownKeys = true }
-            val parsed = json.decodeFromString<Map<String, kotlinx.serialization.json.JsonElement>>(clean)
-            val text = parsed["text"]?.toString()?.trim('"') ?: responseText
+            val raw = chat(prompt)
+            val clean = raw.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+            val parsed = Json.decodeFromString<Map<String, kotlinx.serialization.json.JsonElement>>(clean)
+            val text = parsed["text"]?.toString()?.trim('"') ?: raw
             val hashtags = parsed["hashtags"]?.let {
-                json.decodeFromString<List<String>>(it.toString())
+                Json.decodeFromString<List<String>>(it.toString())
             } ?: emptyList()
-            CaptionResult(text = text, hashtags = hashtags, platform = request.platform)
+            TextPostResult(text = text, hashtags = hashtags, characterCount = text.length)
         } catch (e: Exception) {
-            CaptionResult(text = responseText, hashtags = emptyList(), platform = request.platform)
+            TextPostResult(text = "Ошибка генерации: ${e.message}")
         }
     }
 
-    suspend fun generateIdeas(request: IdeasRequest): IdeasResult {
-        val platformLabel = when (request.platform) {
-            "instagram" -> "Instagram"
-            "tiktok" -> "TikTok"
-            "vk" -> "ВКонтакте"
-            else -> request.platform
+    // ── 30 идей для контента ─────────────────────────────────────────────────
+
+    suspend fun generateIdeas(request: GenerateIdeasRequest): IdeasResult {
+        val platformGuide = when (request.platform) {
+            "instagram" -> "Instagram Reels и посты"
+            "tiktok"    -> "TikTok видео"
+            "vk"        -> "ВКонтакте клипы и посты"
+            "youtube"   -> "YouTube Shorts и видео"
+            else        -> "социальные сети"
         }
 
-        val systemPrompt = """
-Ты — контент-стратег. Генерируешь идеи для постов в соцсетях.
-Отвечай ТОЛЬКО JSON без markdown.
-Формат: {"ideas": ["идея 1", "идея 2", ...]}
-""".trimIndent()
-
-        val userPrompt = """
-Придумай ${request.count} идей для постов в $platformLabel.
-Ниша: ${request.niche}
-Требования:
-- Каждая идея — одно конкретное предложение
-- Разные форматы: списки, истории, обзоры, советы, разоблачения
-- Кликабельные заголовки
-- На русском языке
-""".trimIndent()
-
-        val responseText = callClaude(systemPrompt, userPrompt)
+        val prompt = """
+            Придумай ровно ${request.count} идей для контента в ${platformGuide}.
+            Ниша: ${request.niche}
+            
+            Требования:
+            - Каждая идея — конкретная тема для видео или поста (1–2 предложения)
+            - Разнообразие форматов: обучение, личное, юмор, лайфхак, кейс
+            - Ориентация на русскую аудиторию
+            
+            Верни JSON (без markdown-блоков):
+            {"ideas": ["идея 1", "идея 2", ...]}
+        """.trimIndent()
 
         return try {
-            val clean = responseText.trim().removePrefix("```json").removeSuffix("```").trim()
-            val json = Json { ignoreUnknownKeys = true }
-            val parsed = json.decodeFromString<Map<String, kotlinx.serialization.json.JsonElement>>(clean)
-            val ideas = parsed["ideas"]?.let {
-                json.decodeFromString<List<String>>(it.toString())
-            } ?: emptyList()
-            IdeasResult(ideas = ideas)
+            val raw = chat(prompt, maxTokens = 2000)
+            val clean = raw.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+            Json.decodeFromString<IdeasResult>(clean)
         } catch (e: Exception) {
-            IdeasResult(ideas = listOf(responseText))
+            IdeasResult(ideas = listOf("Ошибка генерации идей: ${e.message}"))
         }
     }
 
-    private suspend fun callClaude(systemPrompt: String, userPrompt: String): String {
-        val response = client.post("https://api.anthropic.com/v1/messages") {
-            header("x-api-key", anthropicApiKey)
-            header("anthropic-version", "2023-06-01")
+    // ── Перевод текста ────────────────────────────────────────────────────────
+
+    suspend fun translateText(text: String, targetLanguage: String): String {
+        val prompt = """
+            Переведи текст на $targetLanguage.
+            Сохрани стиль, тон и структуру оригинала.
+            Верни только перевод, без пояснений.
+            
+            Текст: $text
+        """.trimIndent()
+        return try {
+            chat(prompt)
+        } catch (e: Exception) {
+            "Ошибка перевода: ${e.message}"
+        }
+    }
+
+    // ─── Приватный helper ─────────────────────────────────────────────────────
+
+    private suspend fun chat(prompt: String, maxTokens: Int = 1000): String {
+        val response = client.post("$BASE_URL/chat/completions") {
+            header(HttpHeaders.Authorization, "Bearer $laozhangApiKey")
             contentType(ContentType.Application.Json)
-            setBody(
-                AnthropicRequest(
-                    system = systemPrompt,
-                    messages = listOf(AnthropicMessage(role = "user", content = userPrompt)),
-                )
-            )
-        }.body<AnthropicResponse>()
-        return response.content.firstOrNull { it.type == "text" }?.text ?: ""
+            setBody(OaiRequest(
+                model = model,
+                messages = listOf(OaiMessage(role = "user", content = prompt)),
+                max_tokens = maxTokens,
+                temperature = 0.8,
+            ))
+        }.body<OaiResponse>()
+
+        return response.choices.firstOrNull()?.message?.content
+            ?: throw RuntimeException("Empty response from $model")
     }
 
     fun close() = client.close()
