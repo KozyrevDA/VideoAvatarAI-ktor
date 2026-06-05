@@ -7,10 +7,11 @@ import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.*
 
-// ─── Models ──────────────────────────────────────────────────────────────────
+// ─── Public models ────────────────────────────────────────────────────────────
 
 @Serializable
 data class GenerateTextPostRequest(
@@ -39,114 +40,143 @@ data class IdeasResult(val ideas: List<String>)
 @Serializable
 enum class TextTone { FRIENDLY, EXPERT, FUNNY, MOTIVATIONAL }
 
-// OpenAI-compatible request/response (laozhang.ai)
-@Serializable
-private data class OaiMessage(val role: String, val content: String)
+// ─── OpenAI-compatible wire models ───────────────────────────────────────────
 
 @Serializable
-private data class OaiRequest(
+private data class Msg(val role: String, val content: String)
+
+@Serializable
+private data class ResponseFormat(@SerialName("type") val type: String)
+
+@Serializable
+private data class ChatReq(
     val model: String,
-    val messages: List<OaiMessage>,
-    val max_tokens: Int = 1000,
-    val temperature: Double = 0.8,
+    val messages: List<Msg>,
+    @SerialName("max_tokens")     val maxTokens: Int,
+    val temperature: Double,
+    @SerialName("response_format") val responseFormat: ResponseFormat? = null,
 )
 
 @Serializable
-private data class OaiChoice(val message: OaiMessage)
+private data class Choice(val message: Msg)
 
 @Serializable
-private data class OaiResponse(val choices: List<OaiChoice>)
+private data class ChatResp(val choices: List<Choice>)
 
-// ─── Service ─────────────────────────────────────────────────────────────────
+// ─── Service ──────────────────────────────────────────────────────────────────
 
+/**
+ * Генерация текстов для постов и идей контента через GPT-5.2 на laozhang.ai.
+ *
+ * laozhang.ai — OpenAI-совместимый прокси:
+ *   base_url : https://api.laozhang.ai/v1
+ *   auth     : Bearer {LAOZHANG_API_KEY}
+ *   модели   : chatgpt-5.2, gpt-4o, gpt-4.1-mini, claude-3-5-haiku и др.
+ *
+ * Ключ передаётся через .env: LAOZHANG_API_KEY=...
+ */
 class CaptionAiService(
-    private val laozhangApiKey: String,          // laozhang.ai ключ
-    private val anthropicApiKey: String = "",    // резерв (если нужен Claude)
-    private val model: String = "chatgpt-5.2",   // модель на laozhang.ai
+    private val laozhangApiKey: String,
+    private val model: String = "chatgpt-5.2",
 ) {
-    private val BASE_URL = "https://api.laozhang.ai/v1"
+    private val BASE = "https://api.laozhang.ai/v1"
+
+    // System prompt — заставляет GPT-5.2 всегда возвращать чистый JSON
+    private val SYSTEM = """
+        Ты — эксперт по контент-маркетингу для русскоязычных соцсетей.
+        ВАЖНО: отвечай ТОЛЬКО валидным JSON без markdown-обёрток (без ```json, без пояснений).
+        Первый символ ответа — открывающая скобка {, последний — закрывающая }.
+    """.trimIndent()
+
+    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
     private val client = HttpClient(CIO) {
-        install(ContentNegotiation) {
-            json(Json { ignoreUnknownKeys = true; isLenient = true })
-        }
-        engine { requestTimeout = 30_000 }
+        install(ContentNegotiation) { json(json) }
+        engine { requestTimeout = 45_000 }
     }
 
-    // ── Текст для поста ───────────────────────────────────────────────────────
+    // ── Текст поста ───────────────────────────────────────────────────────────
 
     suspend fun generateTextPost(request: GenerateTextPostRequest): TextPostResult {
-        val platformGuide = when (request.platform) {
-            "instagram" -> "Instagram: 150–300 символов, 5–10 хэштегов, эмодзи"
-            "tiktok"    -> "TikTok: 100–150 символов, 3–5 хэштегов, динамично"
-            "vk"        -> "ВКонтакте: 300–600 символов, без хэштегов в тексте"
-            "youtube"   -> "YouTube: описание 200–400 символов, 3–5 хэштегов"
-            else        -> "универсальный формат, 200–300 символов"
-        }
-
-        val toneGuide = when (request.tone) {
-            TextTone.FRIENDLY    -> "дружелюбный, разговорный, тёплый"
-            TextTone.EXPERT      -> "экспертный, уверенный, с фактами"
-            TextTone.FUNNY       -> "с юмором, лёгкий, самоирония"
-            TextTone.MOTIVATIONAL -> "мотивирующий, вдохновляющий, призыв к действию"
-        }
+        val platform = platformSpec(request.platform)
+        val tone     = toneSpec(request.tone)
 
         val prompt = """
-            Напиши текст для поста в $platformGuide.
-            Тема: ${request.topic}
-            Тон: $toneGuide
+            Напиши текст для поста.
             
-            Верни JSON (без markdown-блоков):
-            {
-              "text": "текст поста",
-              "hashtags": ["хэштег1", "хэштег2"]
-            }
+            Платформа: ${request.platform.uppercase()} — $platform
+            Тема: ${request.topic}
+            Тон: $tone
+            
+            Правила:
+            - текст живой, без канцелярита, на «ты»
+            - эмодзи уместно, не перегружай
+            - призыв к действию в конце (сохрани, поделись, напиши в комментах)
+            - хэштеги без # в поле hashtags
+            
+            JSON-ответ строго по схеме:
+            {"text":"...","hashtags":["слово1","слово2"]}
         """.trimIndent()
 
         return try {
-            val raw = chat(prompt)
-            val clean = raw.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
-            val parsed = Json.decodeFromString<Map<String, kotlinx.serialization.json.JsonElement>>(clean)
-            val text = parsed["text"]?.toString()?.trim('"') ?: raw
-            val hashtags = parsed["hashtags"]?.let {
-                Json.decodeFromString<List<String>>(it.toString())
-            } ?: emptyList()
-            TextPostResult(text = text, hashtags = hashtags, characterCount = text.length)
+            val raw = chatJson(prompt, maxTokens = 600, temperature = 0.85)
+            val obj = json.parseToJsonElement(raw).jsonObject
+            val text = obj["text"]!!.jsonPrimitive.content
+            val tags = obj["hashtags"]?.jsonArray
+                ?.map { it.jsonPrimitive.content.trimStart('#') }
+                ?: emptyList()
+            TextPostResult(text = text, hashtags = tags, characterCount = text.length)
         } catch (e: Exception) {
-            TextPostResult(text = "Ошибка генерации: ${e.message}")
+            // fallback: возвращаем сырой текст если JSON не распарсился
+            val raw = chatPlain("Напиши короткий текст для поста на тему «${request.topic}».")
+            TextPostResult(text = raw, characterCount = raw.length)
         }
     }
 
-    // ── 30 идей для контента ─────────────────────────────────────────────────
+    // ── 30 идей контента ─────────────────────────────────────────────────────
 
     suspend fun generateIdeas(request: GenerateIdeasRequest): IdeasResult {
-        val platformGuide = when (request.platform) {
+        val platform = when (request.platform) {
             "instagram" -> "Instagram Reels и посты"
             "tiktok"    -> "TikTok видео"
             "vk"        -> "ВКонтакте клипы и посты"
-            "youtube"   -> "YouTube Shorts и видео"
-            else        -> "социальные сети"
+            "youtube"   -> "YouTube Shorts"
+            else        -> "соцсети"
         }
 
         val prompt = """
-            Придумай ровно ${request.count} идей для контента в ${platformGuide}.
+            Придумай ровно ${request.count} идей для контента.
+            
             Ниша: ${request.niche}
+            Платформа: $platform
+            Аудитория: русскоязычная
             
-            Требования:
-            - Каждая идея — конкретная тема для видео или поста (1–2 предложения)
-            - Разнообразие форматов: обучение, личное, юмор, лайфхак, кейс
-            - Ориентация на русскую аудиторию
+            Требования к каждой идее:
+            - конкретная тема (не общая фраза вроде «советы»)
+            - 1 предложение, до 100 символов
+            - микс форматов: туториал, личная история, разбор ошибок, лайфхак, чек-лист, провокация, тренд
             
-            Верни JSON (без markdown-блоков):
-            {"ideas": ["идея 1", "идея 2", ...]}
+            JSON строго:
+            {"ideas":["идея 1","идея 2",...,"идея ${request.count}"]}
         """.trimIndent()
 
         return try {
-            val raw = chat(prompt, maxTokens = 2000)
-            val clean = raw.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
-            Json.decodeFromString<IdeasResult>(clean)
+            val raw = chatJson(prompt, maxTokens = 2500, temperature = 0.92)
+            val obj = json.parseToJsonElement(raw).jsonObject
+            val ideas = obj["ideas"]!!.jsonArray.map { it.jsonPrimitive.content }
+            IdeasResult(ideas = ideas)
         } catch (e: Exception) {
-            IdeasResult(ideas = listOf("Ошибка генерации идей: ${e.message}"))
+            // fallback: просим ещё раз попроще
+            val raw = chatJson(
+                "Напиши ${request.count} идей постов для ниши «${request.niche}» JSON: {\"ideas\":[...]}",
+                maxTokens = 2500,
+                temperature = 0.9,
+            )
+            try {
+                json.decodeFromString<IdeasResult>(raw)
+            } catch (_: Exception) {
+                IdeasResult(ideas = listOf("Ошибка генерации: ${e.message}"))
+            }
         }
     }
 
@@ -154,35 +184,93 @@ class CaptionAiService(
 
     suspend fun translateText(text: String, targetLanguage: String): String {
         val prompt = """
-            Переведи текст на $targetLanguage.
-            Сохрани стиль, тон и структуру оригинала.
-            Верни только перевод, без пояснений.
+            Переведи на $targetLanguage. Сохрани стиль, эмодзи и структуру.
+            Верни JSON: {"translation":"..."}
             
             Текст: $text
         """.trimIndent()
         return try {
-            chat(prompt)
+            val raw = chatJson(prompt, maxTokens = 800, temperature = 0.3)
+            json.parseToJsonElement(raw).jsonObject["translation"]!!.jsonPrimitive.content
         } catch (e: Exception) {
-            "Ошибка перевода: ${e.message}"
+            chatPlain("Переведи на $targetLanguage (только перевод, без пояснений): $text")
         }
     }
 
-    // ─── Приватный helper ─────────────────────────────────────────────────────
+    // ─── Приватные helpers ────────────────────────────────────────────────────
 
-    private suspend fun chat(prompt: String, maxTokens: Int = 1000): String {
-        val response = client.post("$BASE_URL/chat/completions") {
+    /**
+     * Чат с принудительным JSON-ответом.
+     * GPT-5.2 поддерживает response_format: json_object — не возвращает лишний текст.
+     */
+    private suspend fun chatJson(
+        userPrompt: String,
+        maxTokens: Int = 1000,
+        temperature: Double = 0.8,
+    ): String {
+        val raw = doRequest(
+            messages = listOf(
+                Msg("system", SYSTEM),
+                Msg("user", userPrompt),
+            ),
+            maxTokens = maxTokens,
+            temperature = temperature,
+            responseFormat = ResponseFormat("json_object"),
+        )
+        // Убираем возможные markdown-обёртки (на случай старой версии модели)
+        return raw
+            .trim()
+            .removePrefix("```json")
+            .removePrefix("```")
+            .removeSuffix("```")
+            .trim()
+    }
+
+    /** Обычный текстовый ответ (для fallback) */
+    private suspend fun chatPlain(userPrompt: String, maxTokens: Int = 600): String =
+        doRequest(
+            messages = listOf(Msg("user", userPrompt)),
+            maxTokens = maxTokens,
+            temperature = 0.8,
+        )
+
+    private suspend fun doRequest(
+        messages: List<Msg>,
+        maxTokens: Int,
+        temperature: Double,
+        responseFormat: ResponseFormat? = null,
+    ): String {
+        val resp = client.post("$BASE/chat/completions") {
             header(HttpHeaders.Authorization, "Bearer $laozhangApiKey")
             contentType(ContentType.Application.Json)
-            setBody(OaiRequest(
-                model = model,
-                messages = listOf(OaiMessage(role = "user", content = prompt)),
-                max_tokens = maxTokens,
-                temperature = 0.8,
+            setBody(ChatReq(
+                model         = model,
+                messages      = messages,
+                maxTokens     = maxTokens,
+                temperature   = temperature,
+                responseFormat = responseFormat,
             ))
-        }.body<OaiResponse>()
+        }.body<ChatResp>()
 
-        return response.choices.firstOrNull()?.message?.content
-            ?: throw RuntimeException("Empty response from $model")
+        return resp.choices.firstOrNull()?.message?.content
+            ?: throw RuntimeException("Пустой ответ от $model")
+    }
+
+    // ─── Вспомогательные данные ───────────────────────────────────────────────
+
+    private fun platformSpec(platform: String) = when (platform) {
+        "instagram" -> "150–300 символов, 5–10 хэштегов, эмодзи приветствуются"
+        "tiktok"    -> "80–150 символов, 3–5 хэштегов, разговорный стиль"
+        "vk"        -> "300–800 символов, хэштеги в конце, можно без эмодзи"
+        "youtube"   -> "200–500 символов в описании, 3–5 хэштегов"
+        else        -> "200–400 символов, универсальный формат"
+    }
+
+    private fun toneSpec(tone: TextTone) = when (tone) {
+        TextTone.FRIENDLY     -> "дружелюбный, тёплый, как разговор с другом"
+        TextTone.EXPERT       -> "экспертный, уверенный, с конкретными фактами и цифрами"
+        TextTone.FUNNY        -> "с юмором, самоирония, лёгкий — заставь улыбнуться"
+        TextTone.MOTIVATIONAL -> "мотивирующий, энергичный, призывает к действию"
     }
 
     fun close() = client.close()
