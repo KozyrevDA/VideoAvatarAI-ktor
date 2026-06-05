@@ -20,30 +20,31 @@ fun main() {
 }
 
 fun Application.module() {
-    val settings = loadSettings()
+    val s = loadSettings()
 
     configureSerialization()
     configureHTTP()
-    configureAuthentication(settings)
+    configureAuthentication(s)
 
-    if (settings.dbUrl.isNotBlank()) {
-        PostgresDatabase.init(settings.dbUrl, settings.dbUser, settings.dbPassword)
+    if (s.dbUrl.isNotBlank()) {
+        PostgresDatabase.init(s.dbUrl, s.dbUser, s.dbPassword)
     }
 
     val avatarService = AvatarAiService(
-        hedraApiKey     = settings.hedraApiKey,
-        fishAudioApiKey = settings.fishAudioApiKey,
-        veo3ApiKey      = settings.veo3ApiKey,
+        hedraApiKey   = s.hedraApiKey,
+        fishAudioApiKey = s.fishAudioApiKey,
+        veo3ApiKey    = s.veo3ApiKey,
+        avatarModel   = s.hedraAvatarModel,   // kling_ai_avatar_v2_standard
     )
     val captionService = CaptionAiService(
-        laozhangApiKey = settings.laozhangApiKey,
-        model          = settings.laozhangModel,  // chatgpt-5.2
+        laozhangApiKey = s.laozhangApiKey,
+        model          = s.laozhangModel,
     )
     val translateService = TranslateAiService(
-        hedraApiKey     = settings.hedraApiKey,
-        fishAudioApiKey = settings.fishAudioApiKey,
+        hedraApiKey     = s.hedraApiKey,
+        fishAudioApiKey = s.fishAudioApiKey,
     )
-    val pushService  = PushNotificationService(fcmServerKey = settings.fcmServerKey)
+    val pushService  = PushNotificationService(fcmServerKey = s.fcmServerKey)
     val userRepo     = PostgresUserRepository()
     val videoRepo    = PostgresVideoRepository()
     val pollingJob   = AvatarPollingJob(avatarService, videoRepo, userRepo, pushService)
@@ -56,6 +57,6 @@ fun Application.module() {
         userRepo         = userRepo,
         videoRepo        = videoRepo,
         pollingJob       = pollingJob,
-        settings         = settings,
+        settings         = s,
     )
 }
