@@ -31,10 +31,10 @@ fun Application.module() {
     }
 
     val avatarService = AvatarAiService(
-        hedraApiKey   = s.hedraApiKey,
+        hedraApiKey     = s.hedraApiKey,
         fishAudioApiKey = s.fishAudioApiKey,
-        veo3ApiKey    = s.veo3ApiKey,
-        avatarModel   = s.hedraAvatarModel,   // kling_ai_avatar_v2_standard
+        veo3ApiKey      = s.veo3ApiKey,
+        avatarModel     = s.hedraAvatarModel,
     )
     val captionService = CaptionAiService(
         laozhangApiKey = s.laozhangApiKey,
@@ -43,6 +43,9 @@ fun Application.module() {
     val translateService = TranslateAiService(
         hedraApiKey     = s.hedraApiKey,
         fishAudioApiKey = s.fishAudioApiKey,
+        laozhangApiKey  = s.laozhangApiKey,   // ← добавлен
+        laozhangModel   = s.laozhangModel,     // ← добавлен
+        avatarModel     = s.hedraAvatarModel,  // ← тот же Kling v2 Standard
     )
     val pushService  = PushNotificationService(fcmServerKey = s.fcmServerKey)
     val userRepo     = PostgresUserRepository()
