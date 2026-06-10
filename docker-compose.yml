@@ -2,30 +2,33 @@ version: '3.8'
 services:
   app:
     build: .
+    restart: unless-stopped
     ports:
       - "8080:8080"
+    env_file:
+      - .env
     environment:
       - DATABASE_URL=jdbc:postgresql://db:5432/videoavataraii
       - DATABASE_USER=postgres
-      - DATABASE_PASSWORD=postgres
-      - JWT_SECRET=local_dev_secret_change_in_prod
-      - HEDRA_API_KEY=${HEDRA_API_KEY}
-      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - FCM_SERVER_KEY=${FCM_SERVER_KEY}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD:-postgres}
     depends_on:
-      - db
+      db:
+        condition: service_healthy
 
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: videoavataraii
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    ports:
-      - "5432:5432"
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-postgres}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   pgdata:
